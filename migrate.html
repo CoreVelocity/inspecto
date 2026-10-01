@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inspecto — Move data to OneDrive</title>
+<style>
+  :root { --ink:#00343D; --sub:#5b7176; --line:#d9e3e5; --bg:#f3f7f8; --ok:#2f9e8f; --bad:#c0392b; --gold:#C9A24B; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:.3px; }
+  p.lead { color:var(--sub); margin:0 0 22px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:12px; letter-spacing:1.4px; text-transform:uppercase; color:var(--sub); margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--sub); margin:10px 0 4px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; font:inherit; background:#fafcfc; }
+  button { background:var(--ink); color:#fff; border:0; border-radius:10px; padding:11px 18px; font:600 14px inherit; cursor:pointer; margin-top:14px; }
+  button[disabled] { opacity:.45; cursor:not-allowed; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > div { flex:1 1 220px; }
+  #log { font:12px/1.6 ui-monospace, Menlo, monospace; background:#0e2a30; color:#d8ecef; border-radius:12px; padding:14px; min-height:160px; max-height:420px; overflow:auto; white-space:pre-wrap; }
+  .ok { color:#7fe0c9; } .bad { color:#ff9a8b; } .note { color:#f0d38a; }
+  .pill { display:inline-block; font-size:12px; padding:3px 10px; border-radius:99px; background:#eef4f5; color:var(--sub); }
+  details { margin-top:8px; color:var(--sub); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Move Inspecto data to OneDrive</h1>
+  <p class="lead">One-time copy of every table and stored file from Supabase into the OneDrive of <b>sync@inspectohandover.com</b> (folder <b>InspectoCRM</b>). Safe to run more than once — rows already edited on OneDrive are never overwritten, and files already copied are skipped.</p>
+
+  <div class="card">
+    <h2>1 · Sign in as the admin</h2>
+    <div class="row">
+      <div><label>Email</label><input id="email" value="info@inspectohandover.com" autocomplete="username"></div>
+      <div><label>Password (your Inspecto login)</label><input id="pw" type="password" autocomplete="current-password"></div>
+    </div>
+    <details><summary>Project settings</summary>
+      <label>Supabase project URL</label><input id="url" value="https://kwxodpzqbjwubdfxrjwq.supabase.co">
+      <label>anon public key</label><input id="key" value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3eG9kcHpxYmp3dWJkZnhyandxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5NzAwOTgsImV4cCI6MjA5NzU0NjA5OH0.S83_xtADTxoBJMVWhcdVgkIemaopvAOKmVh9A4Z3xgg">
+    </details>
+    <button id="signin">Sign in &amp; check OneDrive</button> <span id="who" class="pill" style="margin-left:8px">not signed in</span>
+  </div>
+
+  <div class="card">
+    <h2>2 · Copy everything</h2>
+    <p style="margin:0;color:var(--sub)">Tables: CRM records, calls, certificates register, certificate private records, P&amp;L, push subscriptions. Files: certificate pictures, certificate PDFs, title deeds.</p>
+    <button id="go" disabled>Start migration</button>
+  </div>
+
+  <div id="log">Waiting…</div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const TABLES = ["inspecto", "inspecto_calls", "certificates", "certificate_private", "pl_private", "push_subs", "push_queue"];
+const BUCKETS = ["inspecto-cert-img", "inspecto-certs", "inspecto-deeds"];
+let token = "";
+const base = () => $("url").value.trim().replace(/\/+$/, "");
+const log = (msg, cls) => { const l = $("log"); if (l.dataset.started !== "1") { l.textContent = ""; l.dataset.started = "1"; } const s = document.createElement("div"); if (cls) s.className = cls; s.textContent = msg; l.appendChild(s); l.scrollTop = l.scrollHeight; };
+
+async function gw(body) {
+  const r = await fetch(base() + "/functions/v1/onedrive-store", {
+    method: "POST",
+    headers: { apikey: $("key").value.trim(), Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+$("signin").onclick = async () => {
+  try {
+    $("signin").disabled = true;
+    const r = await fetch(base() + "/auth/v1/token?grant_type=password", {
+      method: "POST",
+      headers: { apikey: $("key").value.trim(), "Content-Type": "application/json" },
+      body: JSON.stringify({ email: $("email").value.trim().toLowerCase(), password: $("pw").value }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error_description || j.msg || "Sign-in failed (" + r.status + ")");
+    token = j.access_token;
+    const p = await gw({ op: "ping" });
+    $("who").textContent = p.email + (p.admin ? " · admin" : " · not admin");
+    log("Connected. OneDrive: " + p.drive + " / " + p.root, "ok");
+    if (!p.admin) log("This account is not in ADMIN_EMAILS, so the migration will be refused.", "bad");
+    $("go").disabled = !p.admin;
+  } catch (e) { log("✗ " + e.message, "bad"); }
+  finally { $("signin").disabled = false; }
+};
+
+$("go").onclick = async () => {
+  $("go").disabled = true;
+  let problems = 0;
+  for (const t of TABLES) {
+    try {
+      const r = await gw({ op: "migrate_table", table: t });
+      log(r.skipped ? `– ${t}: ${r.skipped}` : `✓ ${t}: ${r.rows} rows → ${r.shards} file(s)`, r.skipped ? "note" : "ok");
+    } catch (e) { problems++; log(`✗ ${t}: ${e.message}`, "bad"); }
+  }
+  for (const b of BUCKETS) {
+    const queue = [""];
+    let copied = 0, bp = problems;
+    while (queue.length) {
+      const prefix = queue.shift();
+      let offset = 0;
+      while (offset !== null) {
+        try {
+          const r = await gw({ op: "migrate_files", bucket: b, prefix, offset });
+          if (r.note) { log(`– ${b}: ${r.note}`, "note"); offset = null; break; }
+          copied += r.copied;
+          queue.push(...(r.folders || []));
+          offset = r.next;
+          if (r.copied) log(`  ${b}/${prefix || ""} +${r.copied}`);
+        } catch (e) { problems++; log(`✗ ${b}/${prefix}: ${e.message}`, "bad"); offset = null; }
+      }
+    }
+    if (problems === bp) log(`✓ ${b}: ${copied} new file(s) copied`, "ok");
+  }
+  log(problems ? `Finished with ${problems} problem(s) — run it again to retry those.` : "All done. Everything is in OneDrive → InspectoCRM.", problems ? "bad" : "ok");
+  $("go").disabled = false;
+};
+</script>
+</body>
+</html>
